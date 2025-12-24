@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(npm install:*)",
+      "Bash(python manage.py check:*)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(python:*)",
+      "Bash(dir:*)",
+      "Bash(ls -la \"d:\\nocodile new\\nocodile-frontend\\src\\pages\"\" 2>/dev/null || find \"d:nocodile newnocodile-frontendsrcpages\" -type f -name \"*.tsx\" -o -name \"*.ts \")",
+      "Bash(python manage.py makemigrations:*)",
+      "Bash(python manage.py migrate:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(python manage.py:*)"
+    ]
+  }
+}
