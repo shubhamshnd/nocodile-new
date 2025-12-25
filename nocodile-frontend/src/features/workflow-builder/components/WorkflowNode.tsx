@@ -49,42 +49,18 @@ function WorkflowNodeComponent({ data, selected }: WorkflowNodeProps) {
   const IconComponent = ICON_MAP[nodeInfo.icon] || PlayArrow;
 
   // Determine handles based on node type
+  // State nodes always have both handles (for flexibility like "send back" connections)
+  // Only explicit 'start' and 'end' node types restrict handles
   const showInput = data.nodeType !== 'start';
   const showOutput = data.nodeType !== 'end';
 
-  // Get outputs for approval/condition nodes
-  const getOutputHandles = () => {
-    if (data.nodeType === 'approval') {
-      const actions = (data.config.actions as Array<{ key: string; label: string }>) || [
-        { key: 'approved', label: 'Approved' },
-        { key: 'rejected', label: 'Rejected' },
-      ];
-      return actions;
-    }
-    if (data.nodeType === 'condition') {
-      const conditions = (data.config.conditions as Array<{ targetBranch: string; name: string }>) || [];
-      return [
-        ...conditions.map((c) => ({ key: c.targetBranch, label: c.name })),
-        { key: 'else', label: 'Else' },
-      ];
-    }
-    if (data.nodeType === 'fork') {
-      const branches = (data.config.branches as Array<{ id: string; name: string }>) || [
-        { id: 'branch_1', name: 'Branch 1' },
-        { id: 'branch_2', name: 'Branch 2' },
-      ];
-      return branches.map((b) => ({ key: b.id, label: b.name }));
-    }
-    if (data.nodeType === 'webhook') {
-      return [
-        { key: 'success', label: 'Success' },
-        { key: 'error', label: 'Error' },
-      ];
-    }
-    return [{ key: 'output', label: '' }];
-  };
+  // Get isFinal for display purposes
+  const config = data.config as { isInitial?: boolean; isFinal?: boolean };
 
-  const outputs = showOutput ? getOutputHandles() : [];
+  // For the simplified workflow builder, all nodes use a single 'output' handle
+  // Actions are defined by connections (edges), not by separate output handles
+  // This makes it easier to configure workflows visually
+  const outputs = showOutput ? [{ key: 'output', label: '' }] : [];
 
   return (
     <Box
@@ -102,6 +78,7 @@ function WorkflowNodeComponent({ data, selected }: WorkflowNodeProps) {
         <Handle
           type="target"
           position={Position.Left}
+          id="input"
           style={{
             width: 12,
             height: 12,

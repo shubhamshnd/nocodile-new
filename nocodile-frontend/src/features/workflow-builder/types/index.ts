@@ -341,12 +341,133 @@ export interface NodeTypeInfo {
   outputs: number | 'dynamic';
 }
 
+// Preset state configurations for common workflow states
+export interface StatePreset {
+  key: string;
+  name: string;
+  stateKey: string;
+  color: string;
+  isInitial: boolean;
+  isFinal: boolean;
+  icon: string;
+  description: string;
+  defaultPermissions: StatePermissions;
+}
+
+export const STATE_PRESETS: StatePreset[] = [
+  {
+    key: 'draft',
+    name: 'Draft',
+    stateKey: 'DRAFT',
+    color: '#9e9e9e',
+    isInitial: true,
+    isFinal: false,
+    icon: 'Edit',
+    description: 'Initial state - document can be edited by submitter',
+    defaultPermissions: {
+      view: { includeSubmitter: true, includeApprovers: false },
+      editMainForm: true,
+      editChildForms: true,
+    },
+  },
+  {
+    key: 'pending',
+    name: 'Pending Approval',
+    stateKey: 'PENDING',
+    color: '#ff9800',
+    isInitial: false,
+    isFinal: false,
+    icon: 'HourglassEmpty',
+    description: 'Waiting for approval - read-only for submitter',
+    defaultPermissions: {
+      view: { includeSubmitter: true, includeApprovers: true },
+      editMainForm: false,
+      editChildForms: false,
+    },
+  },
+  {
+    key: 'approved',
+    name: 'Approved',
+    stateKey: 'APPROVED',
+    color: '#4caf50',
+    isInitial: false,
+    isFinal: false,
+    icon: 'CheckCircle',
+    description: 'Document has been approved',
+    defaultPermissions: {
+      view: { includeSubmitter: true, includeApprovers: true },
+      editMainForm: false,
+      editChildForms: false,
+    },
+  },
+  {
+    key: 'rejected',
+    name: 'Rejected',
+    stateKey: 'REJECTED',
+    color: '#f44336',
+    isInitial: false,
+    isFinal: true,
+    icon: 'Cancel',
+    description: 'Document has been rejected (final state)',
+    defaultPermissions: {
+      view: { includeSubmitter: true, includeApprovers: true },
+      editMainForm: false,
+      editChildForms: false,
+    },
+  },
+  {
+    key: 'sent_back',
+    name: 'Sent Back',
+    stateKey: 'SENT_BACK',
+    color: '#ff5722',
+    isInitial: false,
+    isFinal: false,
+    icon: 'Undo',
+    description: 'Returned for changes - submitter can edit',
+    defaultPermissions: {
+      view: { includeSubmitter: true, includeApprovers: true },
+      editMainForm: true,
+      editChildForms: true,
+    },
+  },
+  {
+    key: 'completed',
+    name: 'Completed',
+    stateKey: 'COMPLETED',
+    color: '#2196f3',
+    isInitial: false,
+    isFinal: true,
+    icon: 'Done',
+    description: 'Workflow completed (final state)',
+    defaultPermissions: {
+      view: { includeSubmitter: true, includeApprovers: true },
+      editMainForm: false,
+      editChildForms: false,
+    },
+  },
+  {
+    key: 'custom',
+    name: 'Custom State',
+    stateKey: '',
+    color: '#673ab7',
+    isInitial: false,
+    isFinal: false,
+    icon: 'FiberManualRecord',
+    description: 'Create a custom state with your own settings',
+    defaultPermissions: {
+      view: { includeSubmitter: true, includeApprovers: true },
+      editMainForm: false,
+      editChildForms: false,
+    },
+  },
+];
+
 // Node type metadata
 export const NODE_TYPE_INFO: Record<WorkflowNodeType, NodeTypeInfo> = {
   start: {
     type: 'start',
     label: 'Start',
-    description: 'Entry point when form is submitted',
+    description: 'Entry point when form is submitted (deprecated - use Draft state)',
     color: '#4caf50',
     icon: 'PlayArrow',
     inputs: 0,
@@ -355,7 +476,7 @@ export const NODE_TYPE_INFO: Record<WorkflowNodeType, NodeTypeInfo> = {
   state: {
     type: 'state',
     label: 'State',
-    description: 'Document state (Draft, Approved, etc.)',
+    description: 'Document state with access control',
     color: '#673ab7',
     icon: 'FiberManualRecord',
     inputs: 'dynamic',
@@ -364,7 +485,7 @@ export const NODE_TYPE_INFO: Record<WorkflowNodeType, NodeTypeInfo> = {
   end: {
     type: 'end',
     label: 'End',
-    description: 'Terminal state (Approved, Rejected, etc.)',
+    description: 'Terminal state (deprecated - use final state)',
     color: '#f44336',
     icon: 'Stop',
     inputs: 1,

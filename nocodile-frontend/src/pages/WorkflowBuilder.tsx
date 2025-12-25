@@ -30,14 +30,16 @@ import {
   ZoomIn,
   ZoomOut,
   CenterFocusStrong,
+  PlayArrow,
 } from '@mui/icons-material';
 import WorkflowNodeComponent from '../features/workflow-builder/components/WorkflowNode';
 import type { WorkflowNodeData } from '../features/workflow-builder/components/WorkflowNode';
+import WorkflowPreview from '../features/workflow-builder/components/WorkflowPreview';
 import { NodePalette } from '../features/workflow-builder/palette/NodePalette';
 import { PropertiesPanel } from '../features/workflow-builder/panels/PropertiesPanel';
 import { ConnectionProperties } from '../features/workflow-builder/panels/ConnectionProperties';
 import type { WorkflowNodeType, ActionConfig } from '../features/workflow-builder/types';
-import { getDefaultNodeConfig } from '../features/workflow-builder/types';
+import { getDefaultNodeConfig, STATE_PRESETS } from '../features/workflow-builder/types';
 import { workflows, workflowGraph as workflowGraphApi } from '../services/api';
 import type { Workflow } from '../types';
 
@@ -64,12 +66,59 @@ function WorkflowBuilderInner() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   // Mock data for now - will be loaded from API
   const [formFields] = useState<Array<{ fieldKey: string; config: { label?: string } }>>([]);
   const [roles] = useState<Array<{ id: string; name: string }>>([]);
   const [users] = useState<Array<{ id: string; firstName: string; lastName: string; username: string }>>([]);
   const [childForms] = useState<Array<{ id: string; name: string }>>([]);
+
+  // Create default workflow with Draft and Complete states
+  const createDefaultWorkflow = useCallback(() => {
+    const draftPreset = STATE_PRESETS.find((p) => p.key === 'draft')!;
+    const completedPreset = STATE_PRESETS.find((p) => p.key === 'completed')!;
+
+    const draftNode: WorkflowNode = {
+      id: `state_draft_${Date.now()}`,
+      type: 'workflowNode',
+      position: { x: 150, y: 150 },
+      data: {
+        nodeType: 'state',
+        label: draftPreset.name,
+        config: {
+          name: draftPreset.name,
+          stateKey: draftPreset.stateKey,
+          color: draftPreset.color,
+          isInitial: true,
+          isFinal: false,
+          allowEdit: true,
+          permissions: draftPreset.defaultPermissions,
+        },
+      },
+    };
+
+    const completedNode: WorkflowNode = {
+      id: `state_completed_${Date.now() + 1}`,
+      type: 'workflowNode',
+      position: { x: 550, y: 150 },
+      data: {
+        nodeType: 'state',
+        label: completedPreset.name,
+        config: {
+          name: completedPreset.name,
+          stateKey: completedPreset.stateKey,
+          color: completedPreset.color,
+          isInitial: false,
+          isFinal: true,
+          allowEdit: false,
+          permissions: completedPreset.defaultPermissions,
+        },
+      },
+    };
+
+    setNodes([draftNode, completedNode]);
+  }, [setNodes]);
 
   // Load workflow data
   useEffect(() => {
@@ -113,12 +162,12 @@ function WorkflowBuilderInner() {
             setNodes(flowNodes);
             setEdges(flowEdges);
           } else {
-            // Create default start node
-            createDefaultStartNode();
+            // Create default workflow with Draft and Complete states
+            createDefaultWorkflow();
           }
         } catch {
           // No existing graph
-          createDefaultStartNode();
+          createDefaultWorkflow();
         }
       } catch (err) {
         console.error('Failed to load workflow:', err);
@@ -129,21 +178,7 @@ function WorkflowBuilderInner() {
     };
 
     loadData();
-  }, [workflowId, setNodes, setEdges]);
-
-  const createDefaultStartNode = useCallback(() => {
-    const startNode: WorkflowNode = {
-      id: `start_${Date.now()}`,
-      type: 'workflowNode',
-      position: { x: 250, y: 100 },
-      data: {
-        nodeType: 'start',
-        label: 'Start',
-        config: getDefaultNodeConfig('start'),
-      },
-    };
-    setNodes([startNode]);
-  }, [setNodes]);
+  }, [workflowId, setNodes, setEdges, createDefaultWorkflow]);
 
   // Handle new connections
   const onConnect = useCallback(
@@ -233,6 +268,7 @@ function WorkflowBuilderInner() {
       event.preventDefault();
 
       const nodeType = event.dataTransfer.getData('nodeType') as WorkflowNodeType;
+      const statePresetKey = event.dataTransfer.getData('statePreset');
       if (!nodeType || !reactFlowWrapper.current) return;
 
       const position = screenToFlowPosition({
@@ -240,14 +276,34 @@ function WorkflowBuilderInner() {
         y: event.clientY,
       });
 
+      let nodeLabel = nodeType.charAt(0).toUpperCase() + nodeType.slice(1).replace(/_/g, ' ');
+      let nodeConfig = getDefaultNodeConfig(nodeType);
+
+      // If it's a state with a preset, apply the preset configuration
+      if (nodeType === 'state' && statePresetKey) {
+        const preset = STATE_PRESETS.find((p) => p.key === statePresetKey);
+        if (preset) {
+          nodeLabel = preset.name;
+          nodeConfig = {
+            name: preset.name,
+            stateKey: preset.stateKey,
+            color: preset.color,
+            isInitial: preset.isInitial,
+            isFinal: preset.isFinal,
+            allowEdit: preset.defaultPermissions.editMainForm,
+            permissions: preset.defaultPermissions,
+          };
+        }
+      }
+
       const newNode: WorkflowNode = {
-        id: `${nodeType}_${Date.now()}`,
+        id: `${nodeType}_${statePresetKey || ''}_${Date.now()}`,
         type: 'workflowNode',
         position,
         data: {
           nodeType,
-          label: nodeType.charAt(0).toUpperCase() + nodeType.slice(1).replace(/_/g, ' '),
-          config: getDefaultNodeConfig(nodeType),
+          label: nodeLabel,
+          config: nodeConfig,
         },
       };
 
@@ -265,9 +321,11 @@ function WorkflowBuilderInner() {
   const handleDeleteNode = useCallback(() => {
     if (!selectedNode) return;
 
-    if (selectedNode.data.nodeType === 'start') {
-      setError('Cannot delete the Start node');
-      return;
+    // Check if this is an initial state (Draft) - warn but allow deletion
+    const config = selectedNode.data.config as Record<string, unknown>;
+    if (config?.isInitial) {
+      // Still allow deletion but show a warning
+      setError('Warning: You deleted the initial state. Add a new Draft state for the workflow to work.');
     }
 
     setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
@@ -387,6 +445,16 @@ function WorkflowBuilderInner() {
         <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
 
         {saving && <Chip label="Saving..." size="small" sx={{ fontSize: '0.6rem' }} />}
+
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<PlayArrow fontSize="small" />}
+          onClick={() => setPreviewOpen(true)}
+          sx={{ fontSize: '0.7rem', textTransform: 'none' }}
+        >
+          Preview
+        </Button>
 
         <Button
           variant="contained"
@@ -516,7 +584,7 @@ function WorkflowBuilderInner() {
               />
 
               {/* Delete button */}
-              {selectedNode && selectedNode.data.nodeType !== 'start' && (
+              {selectedNode && (
                 <Box sx={{ p: 1, borderTop: '1px solid #e0e0e0' }}>
                   <Button
                     fullWidth
@@ -534,6 +602,15 @@ function WorkflowBuilderInner() {
           )}
         </Box>
       </Box>
+
+      {/* Workflow Preview Dialog */}
+      <WorkflowPreview
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        nodes={nodes}
+        edges={edges}
+        workflowName={workflow?.name || 'Workflow'}
+      />
     </Box>
   );
 }

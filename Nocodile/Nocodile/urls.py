@@ -82,4 +82,12 @@ urlpatterns = [
 
     # Dashboard APIs
     path("api/dashboard/stats/", views.dashboard_stats, name="dashboard_stats"),
+
+    # Workflow Execution APIs
+    path("api/documents/<uuid:pk>/execute-action/", views.execute_approval_action, name="execute_approval_action"),
+    path("api/documents/<uuid:pk>/state-history/", views.get_document_state_history, name="document_state_history"),
+    path("api/documents/<uuid:pk>/create-approval-task/", views.create_approval_task, name="create_approval_task"),
+    path("api/documents/<uuid:pk>/approval-tasks/", views.get_document_approval_tasks, name="document_approval_tasks"),
+    path("api/documents/<uuid:pk>/permissions/", views.check_document_permissions, name="document_permissions"),
+    path("api/approvals/my-tasks/", views.get_my_pending_approvals, name="my_pending_approvals"),
 ]

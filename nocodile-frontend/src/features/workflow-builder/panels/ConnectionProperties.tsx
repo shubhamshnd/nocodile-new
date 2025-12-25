@@ -24,6 +24,19 @@ interface ConnectionPropertiesProps {
   onUpdate: (actionConfig: ActionConfig) => void;
 }
 
+// Get default label based on connection type
+function getDefaultLabel(sourceType: string, targetType: string): string {
+  if (sourceType === 'state' && targetType === 'approval') return 'Submit';
+  if (sourceType === 'approval') return 'Approve';
+  return 'Continue';
+}
+
+// Get default button color based on connection type
+function getDefaultColor(sourceType: string, _targetType: string): string {
+  if (sourceType === 'state') return 'primary';
+  return 'success';
+}
+
 export function ConnectionProperties({
   connection,
   sourceNodeType,
@@ -31,31 +44,32 @@ export function ConnectionProperties({
   onUpdate,
 }: ConnectionPropertiesProps) {
   const actionConfig = connection.actionConfig || {
-    label: 'Approve',
-    buttonColor: 'success',
+    actionKey: '',
+    buttonLabel: getDefaultLabel(sourceNodeType, targetNodeType),
+    buttonColor: getDefaultColor(sourceNodeType, targetNodeType),
+    buttonVariant: 'primary' as const,
     requiresComment: false,
     order: 1,
   };
 
-  const isApprovalToState = sourceNodeType === 'approval' && targetNodeType === 'state';
-
-  if (!isApprovalToState) {
-    return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <Typography sx={{ fontSize: '0.7rem', color: '#666' }}>
-          Connection properties are only available for Approval → State connections.
-        </Typography>
-        <Typography sx={{ fontSize: '0.65rem', color: '#999' }}>
-          This connection flows from {sourceNodeType} to {targetNodeType}.
-        </Typography>
-      </Box>
-    );
-  }
+  // Get description based on connection type
+  const getDescription = () => {
+    if (sourceNodeType === 'state' && targetNodeType === 'approval') {
+      return 'This connection creates a submit/forward button on the form.';
+    }
+    if (sourceNodeType === 'approval' && targetNodeType === 'state') {
+      return 'This connection creates an action button for the approver.';
+    }
+    if (sourceNodeType === 'state' && targetNodeType === 'state') {
+      return 'This connection creates a transition button between states.';
+    }
+    return 'Configure how this transition appears to users.';
+  };
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Alert severity="info" sx={{ fontSize: '0.65rem', py: 0.5 }}>
-        This connection creates an approval button. Configure how it appears to approvers.
+        {getDescription()}
       </Alert>
 
       {/* Button Label */}

@@ -16,8 +16,10 @@ from .models import (
     User, Application, DocumentType, Form, FormComponent,
     Workflow, WorkflowState, WorkflowTransition,
     ChildForm, Document, DocumentHistory,
-    WorkflowNode, WorkflowConnection
+    WorkflowNode, WorkflowConnection,
+    ApprovalTask, DocumentStateHistory,
 )
+from .workflow_engine import WorkflowEngine
 
 
 # ============== AUTH APIs ==============
@@ -1595,3 +1597,331 @@ def workflow_connection_detail(request, pk):
 
     conn.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ============== WORKFLOW EXECUTION APIs ==============
+
+def serialize_approval_task(task):
+    """Serialize ApprovalTask for API response"""
+    return {
+        "id": str(task.id),
+        "documentId": str(task.document.id),
+        "documentTitle": task.document.title or f"Document #{task.document.id}",
+        "documentType": task.document.document_type.name if task.document.document_type else None,
+        "workflowNodeId": str(task.workflow_node.id),
+        "workflowNodeLabel": task.workflow_node.label,
+        "assignedToUsers": [
+            {"id": str(u.id), "username": u.username, "fullName": f"{u.first_name} {u.last_name}".strip() or u.username}
+            for u in task.assigned_to_users.all()
+        ],
+        "assignedToRoles": [
+            {"id": str(r.id), "name": r.name}
+            for r in task.assigned_to_roles.all()
+        ],
+        "availableActions": task.available_actions,
+        "status": task.status,
+        "completedBy": str(task.completed_by.id) if task.completed_by else None,
+        "completedAt": task.completed_at.isoformat() if task.completed_at else None,
+        "actionTaken": task.action_taken,
+        "comment": task.comment,
+        "dueDate": task.due_date.isoformat() if task.due_date else None,
+        "createdAt": task.created_at.isoformat(),
+        "updatedAt": task.updated_at.isoformat(),
+        # Include submitter info
+        "submittedBy": {
+            "id": str(task.document.submitted_by.id),
+            "username": task.document.submitted_by.username,
+            "fullName": f"{task.document.submitted_by.first_name} {task.document.submitted_by.last_name}".strip() or task.document.submitted_by.username,
+        } if task.document.submitted_by else None,
+        "submittedAt": task.document.submitted_at.isoformat() if task.document.submitted_at else None,
+    }
+
+
+def serialize_state_history(history):
+    """Serialize DocumentStateHistory for API response"""
+    return {
+        "id": str(history.id),
+        "documentId": str(history.document.id),
+        "fromState": history.from_state,
+        "toState": history.to_state,
+        "transitionedBy": {
+            "id": str(history.transitioned_by.id),
+            "username": history.transitioned_by.username,
+            "fullName": f"{history.transitioned_by.first_name} {history.transitioned_by.last_name}".strip() or history.transitioned_by.username,
+        } if history.transitioned_by else None,
+        "actionKey": history.action_key,
+        "actionLabel": history.action_label,
+        "comment": history.comment,
+        "workflowNodeId": str(history.workflow_node.id) if history.workflow_node else None,
+        "workflowNodeLabel": history.workflow_node.label if history.workflow_node else None,
+        "metadata": history.metadata,
+        "createdAt": history.created_at.isoformat(),
+    }
+
+
+@api_view(["POST"])
+def execute_approval_action(request, pk):
+    """
+    Execute an approval action on a document.
+
+    Request body:
+    {
+        "approvalTaskId": "uuid",
+        "actionKey": "approve" | "reject" | "send_back" | etc,
+        "comment": "optional comment"
+    }
+
+    Response:
+    {
+        "success": true,
+        "newState": "APPROVED",
+        "stateHistory": {...}
+    }
+    """
+    try:
+        document = Document.objects.get(pk=pk)
+    except Document.DoesNotExist:
+        return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    approval_task_id = request.data.get("approvalTaskId")
+    action_key = request.data.get("actionKey")
+    comment = request.data.get("comment", "")
+
+    if not approval_task_id:
+        return Response({"error": "approvalTaskId is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not action_key:
+        return Response({"error": "actionKey is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        approval_task = ApprovalTask.objects.get(pk=approval_task_id, document=document)
+    except ApprovalTask.DoesNotExist:
+        return Response({"error": "Approval task not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if user has permission to approve
+    user = request.user
+    is_assigned_user = approval_task.assigned_to_users.filter(id=user.id).exists()
+    is_assigned_role = approval_task.assigned_to_roles.filter(id__in=user.groups.values_list('id', flat=True)).exists()
+
+    if not is_assigned_user and not is_assigned_role and not user.is_superuser:
+        return Response(
+            {"error": "You do not have permission to approve this document"},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    try:
+        history = WorkflowEngine.execute_approval_action(
+            approval_task=approval_task,
+            action_key=action_key,
+            user=user,
+            comment=comment,
+        )
+
+        return Response({
+            "success": True,
+            "newState": document.current_state,
+            "stateHistory": serialize_state_history(history),
+        })
+
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"error": f"Failed to execute action: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["GET"])
+def get_my_pending_approvals(request):
+    """
+    Get all pending approval tasks assigned to the current user.
+
+    Query params:
+    - documentTypeId: Filter by document type (optional)
+
+    Response:
+    {
+        "tasks": [
+            {
+                "id": "uuid",
+                "documentId": "uuid",
+                "documentTitle": "...",
+                ...
+            }
+        ],
+        "total": 10
+    }
+    """
+    document_type_id = request.query_params.get("documentTypeId")
+
+    tasks = WorkflowEngine.get_user_pending_approvals(
+        user=request.user,
+        document_type_id=document_type_id,
+    )
+
+    return Response({
+        "tasks": [serialize_approval_task(t) for t in tasks],
+        "total": len(tasks),
+    })
+
+
+@api_view(["GET"])
+def get_document_state_history(request, pk):
+    """
+    Get state transition history for a document.
+
+    Response:
+    {
+        "history": [
+            {
+                "id": "uuid",
+                "fromState": "DRAFT",
+                "toState": "PENDING",
+                ...
+            }
+        ]
+    }
+    """
+    try:
+        document = Document.objects.get(pk=pk)
+    except Document.DoesNotExist:
+        return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    history = DocumentStateHistory.objects.filter(document=document).order_by('-created_at')
+
+    return Response({
+        "history": [serialize_state_history(h) for h in history],
+        "currentState": document.current_state,
+    })
+
+
+@api_view(["POST"])
+def create_approval_task(request, pk):
+    """
+    Create an approval task for a document at a specific approval node.
+
+    This is typically called when a document is submitted or transitions to a state
+    that requires approval.
+
+    Request body:
+    {
+        "approvalNodeId": "uuid",
+        "timeoutDays": 7 (optional)
+    }
+
+    Response:
+    {
+        "task": {...}
+    }
+    """
+    try:
+        document = Document.objects.get(pk=pk)
+    except Document.DoesNotExist:
+        return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    approval_node_id = request.data.get("approvalNodeId")
+    timeout_days = request.data.get("timeoutDays")
+
+    if not approval_node_id:
+        return Response({"error": "approvalNodeId is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        approval_node = WorkflowNode.objects.get(pk=approval_node_id, node_type='approval')
+    except WorkflowNode.DoesNotExist:
+        return Response({"error": "Approval node not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        task = WorkflowEngine.create_approval_task(
+            document=document,
+            approval_node=approval_node,
+            timeout_days=timeout_days,
+        )
+
+        return Response({
+            "task": serialize_approval_task(task),
+        }, status=status.HTTP_201_CREATED)
+
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"error": f"Failed to create approval task: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["GET"])
+def get_document_approval_tasks(request, pk):
+    """
+    Get all approval tasks for a document.
+
+    Query params:
+    - status: Filter by status (pending, completed, cancelled, expired)
+
+    Response:
+    {
+        "tasks": [...],
+        "total": 5
+    }
+    """
+    try:
+        document = Document.objects.get(pk=pk)
+    except Document.DoesNotExist:
+        return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    status_filter = request.query_params.get("status")
+
+    tasks = ApprovalTask.objects.filter(document=document)
+    if status_filter:
+        tasks = tasks.filter(status=status_filter)
+
+    tasks = tasks.select_related(
+        'workflow_node',
+        'completed_by'
+    ).prefetch_related(
+        'assigned_to_users',
+        'assigned_to_roles'
+    ).order_by('-created_at')
+
+    return Response({
+        "tasks": [serialize_approval_task(t) for t in tasks],
+        "total": tasks.count(),
+    })
+
+
+@api_view(["GET"])
+def check_document_permissions(request, pk):
+    """
+    Check user's permissions for a document based on its current state.
+
+    Response:
+    {
+        "canView": true,
+        "canEditMainForm": false,
+        "canEditChildForms": true,
+        "currentState": "UH_APPROVED",
+        "pendingApprovalTask": {...} or null
+    }
+    """
+    try:
+        document = Document.objects.get(pk=pk)
+    except Document.DoesNotExist:
+        return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    user = request.user
+
+    can_view = WorkflowEngine.check_state_permissions(document, user, 'view')
+    can_edit_main = WorkflowEngine.check_state_permissions(document, user, 'edit_main_form')
+    can_edit_child = WorkflowEngine.check_state_permissions(document, user, 'edit_child_forms')
+
+    # Get pending approval task for this user
+    pending_task = ApprovalTask.objects.filter(
+        document=document,
+        status='pending'
+    ).filter(
+        models.Q(assigned_to_users=user) |
+        models.Q(assigned_to_roles__in=user.groups.all())
+    ).first()
+
+    return Response({
+        "canView": can_view or document.submitted_by == user or user.is_superuser,
+        "canEditMainForm": can_edit_main or (document.submitted_by == user and document.current_state == 'DRAFT'),
+        "canEditChildForms": can_edit_child,
+        "currentState": document.current_state,
+        "pendingApprovalTask": serialize_approval_task(pending_task) if pending_task else None,
+    })
